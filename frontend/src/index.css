@@ -1,0 +1,60 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  background-color: #F7F8F6;
+  color: #1C2321;
+}
+
+.card {
+  background: #FFFFFF;
+  border: 1px solid #E4E7E3;
+  border-radius: 12px;
+}
+
+.btn-primary {
+  background: #2F6B4F;
+  color: white;
+  font-weight: 600;
+  padding: 10px 22px;
+  border-radius: 8px;
+  transition: background-color 150ms ease;
+}
+.btn-primary:hover { background: #245A41; }
+.btn-primary:disabled { background: #C4CBC6; cursor: not-allowed; }
+
+.btn-secondary {
+  border: 1px solid #E4E7E3;
+  color: #1C2321;
+  padding: 10px 22px;
+  border-radius: 8px;
+  background: white;
+  transition: border-color 150ms ease, background-color 150ms ease;
+}
+.btn-secondary:hover { border-color: #2F6B4F; background: #F4F7F5; }
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.pill-pass { background: #E4EFE7; color: #245A41; }
+.pill-fail { background: #FBEAE6; color: #A3402B; }
+.pill-warn { background: #FBF0DE; color: #A3691F; }
+.pill-neutral { background: #EEF0ED; color: #5B6560; }
+
+.mono { font-family: "JetBrains Mono", monospace; }
+
+input[type="text"], input[type="password"] {
+  border: 1px solid #E4E7E3;
+  border-radius: 8px;
+  padding: 10px 14px;
+  width: 100%;
+  background: white;
+}
+input:focus { outline: 2px solid #2F6B4F33; border-color: #2F6B4F; }

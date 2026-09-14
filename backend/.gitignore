@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.env
+packsure.db
+.venv/
+venv/
+models/*.pt
+models/distilbert-lmpc-ner/

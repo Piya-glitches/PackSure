@@ -1,0 +1,47 @@
+version: "3.9"
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: packsure
+      POSTGRES_PASSWORD: packsure
+      POSTGRES_DB: packsure
+    ports:
+      - "5432:5432"
+    volumes:
+      - packsure_pg_data:/var/lib/postgresql/data
+
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://packsure:packsure@db:5432/packsure
+      JWT_SECRET: local-dev-secret-change-in-production
+      CORS_ORIGINS: http://localhost:5173
+      # Set to "true" to load the DistilBERT ensemble signal (an extra
+      # ~650MB download). It is NOT required for the pipeline to work --
+      # the rule-based classifier drives the actual decision either way
+      # (see field_classifier.py). Leave unset/false unless you specifically
+      # want the supplementary NER signal.
+      ENABLE_NER_BACKBONE: "false"
+    ports:
+      - "8000:8000"
+    depends_on:
+      - db
+    volumes:
+      - ./backend/models:/app/models
+      # Without these, EasyOCR and HuggingFace re-download their model
+      # weights (100MB+ and 650MB respectively) EVERY time the container
+      # is recreated, since those downloads land in the container's
+      # writable layer, not the image. Named volumes make them persist
+      # across `docker compose up --build` / restarts / `down` (but not
+      # `down -v`).
+      - easyocr_cache:/root/.EasyOCR
+      - hf_cache:/root/.cache/huggingface
+
+volumes:
+  packsure_pg_data:
+  easyocr_cache:
+  hf_cache:
