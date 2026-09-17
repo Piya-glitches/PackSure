@@ -9,6 +9,29 @@ single ComplianceReport, matching the architecture's "End-to-End Flow":
     -> [Layer 3] NER field classification
     -> [Layer 4] Rule validation (format + responsible-party + font-size-in-mm)
     -> Output: Pass/Fail per field, with evidence, citation, and confidence
+
+-----------------------------------------------------------------------
+PATCH NOTE (see packsure_context_transfer.md, "Real bugs found", #2):
+
+Barcode calibration was previously run on `enhanced` (the perspective-
+warped AND CLAHE-contrast-remapped image). Both operations distort the
+barcode: the homography warp can skew module widths non-uniformly if the
+detected PDP quad isn't perfectly fronto-parallel to the barcode itself,
+and CLAHE's local contrast remapping can blow out or crush the sharp
+black/white module transitions pyzbar depends on for edge detection --
+on a real test scan with a clearly visible, in-focus barcode, this caused
+calibration to report "no barcode found."
+
+Fix: run barcode detection on the ORIGINAL, undistorted input image
+first. Only fall back to the warped/enhanced image if nothing is found
+on the original (e.g. because the barcode isn't inside the detected PDP
+quad at all in the original frame, which shouldn't normally happen, but
+is a safe fallback rather than a regression). This also happens to be
+more correct architecturally: Layer 0 (calibration) is meant to run on
+the raw photo, before any Layer 1 geometric processing -- exactly per
+the original spec of using the barcode as a ruler for THIS SPECIFIC
+photo, which requires measuring it as photographed, not as reprojected.
+-----------------------------------------------------------------------
 """
 
 import time
@@ -51,8 +74,19 @@ def run_full_pipeline(image_bgr: np.ndarray, manual_quad=None) -> ComplianceRepo
     # Layer 0: quality gate (run on the corrected image, since that's what OCR actually sees)
     quality = timed("quality_gate", lambda: run_quality_gate(enhanced))
 
-    # Layer 0: barcode calibration
-    calibration = timed("barcode_calibration", lambda: detect_barcode_calibration(enhanced))
+    # Layer 0: barcode calibration.
+    # Run on the ORIGINAL image first -- CLAHE + homography warp both
+    # distort the sharp module transitions pyzbar needs (see patch note
+    # above). Fall back to the warped/enhanced image only if the original
+    # yields nothing, so a barcode that happens to sit outside the
+    # detected PDP quad in the source photo still has a chance to be found.
+    def _calibrate():
+        cal = detect_barcode_calibration(image_bgr)
+        if cal.found:
+            return cal
+        return detect_barcode_calibration(enhanced)
+
+    calibration = timed("barcode_calibration", _calibrate)
 
     # Layer 2: CRAFT text detection + CRNN recognition (via EasyOCR)
     raw_text, words = timed("ocr", lambda: run_ocr(enhanced))
