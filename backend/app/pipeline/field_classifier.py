@@ -21,40 +21,21 @@ So this module does both, honestly:
      swap FINE_TUNED_MODEL_PATH below).
   2. Runs a rule-augmented classifier (weighted keyword + regex + fuzzy
      matching over OCR line-groups) as the PRACTICAL classifier that
-     actually drives the compliance decision today.
+     actually drives the compliance decision today. This mirrors what the
+     architecture calls the "80% of hackathon teams" naive approach only
+     in the sense that it uses regex signals -- but unlike a keyword
+     matcher, it operates on grouped lines (not single words), fuzzy
+     -matches to tolerate OCR errors, and scores every field against every
+     line rather than stopping at the first hit, which is what makes it
+     classification rather than search.
 
 Both paths are real and wired up. We do not present the untrained
 DistilBERT backbone's raw output as if it already solves open-set field
 extraction -- that would be overclaiming.
-
------------------------------------------------------------------------
-PATCH NOTES (see packsure_context_transfer.md, "Real bugs found"):
-
-Bug #1 -- _fuzzy_keyword_score previously did whole-line character
-subsequence matching with no length/density guard. A short keyword like
-"usp" or "origin" trivially subsequence-matches inside ANY sufficiently
-long garbled OCR line (e.g. "...U...S...P..." scattered across 80
-characters), which is why COUNTRY_OF_ORIGIN, UNIT_PRICE, and MFR_ADDRESS
-were all matching the same garbled "Manufactured by..." line on a real
-test scan. Fixed by:
-  - Requiring keywords to match as a bounded, low-edit-distance SPAN
-    (a contiguous window of the line, not the whole line) rather than a
-    subsequence scattered across arbitrary distance.
-  - Scaling the subsequence fallback's acceptance threshold by how much
-    of the search window it actually occupies (density), not just by
-    match ratio, so a match padded with unrelated characters no longer
-    trivially passes for short keywords in long lines.
-
-Bug #3 -- CONSUMER_CARE (and MFR_ADDRESS) extraction only looked at the
-single OCR line that matched the keyword/pattern. Real labels frequently
-put "Contact our Customer Care Executive at:" on one line and the actual
-phone number on the next. Fixed by scoring a small sliding WINDOW of
-adjacent lines (keyword line + up to 2 lines below) for these two fields,
-and returning the concatenated window text/bbox as the extraction.
------------------------------------------------------------------------
 """
 
 from typing import List, Optional, Dict
+import os
 import re
 
 from app.pipeline.types import OcrWord, FieldExtraction, BBox
@@ -113,12 +94,6 @@ FIELD_SIGNATURES = {
     },
 }
 
-# Minimum keyword length allowed to use the loose subsequence fallback at
-# all. Below this, a keyword MUST appear as a contiguous (low-edit-distance)
-# span -- short strings like "usp" or "mrp" are far too easy to
-# subsequence-match by coincidence inside long garbled OCR lines.
-MIN_LEN_FOR_SUBSEQUENCE_FALLBACK = 8
-
 
 def _levenshtein(a: str, b: str) -> int:
     if a == b:
@@ -147,7 +122,6 @@ def _best_span_edit_ratio(haystack: str, needle: str) -> float:
     if n == 0:
         return 0.0
     best_ratio = 0.0
-    # Try window sizes from n-2 to n+2 to tolerate insertions/deletions.
     for size in range(max(1, n - 2), n + 3):
         if size > len(haystack):
             continue
@@ -160,11 +134,20 @@ def _best_span_edit_ratio(haystack: str, needle: str) -> float:
     return best_ratio
 
 
+# Minimum keyword length allowed to use the loose subsequence fallback at
+# all. Below this, a keyword MUST appear as a contiguous (low-edit-distance)
+# span -- short strings like "usp" or "origin" are far too easy to
+# subsequence-match by coincidence inside long garbled OCR lines (this was
+# the confirmed root cause of a real scan where COUNTRY_OF_ORIGIN,
+# UNIT_PRICE, and MFR_ADDRESS all matched the same unrelated garbled line).
+MIN_LEN_FOR_SUBSEQUENCE_FALLBACK = 8
+
+
 def _fuzzy_keyword_score(line_text: str, keywords: List[str]) -> float:
     """Scores whether any keyword genuinely appears in line_text.
 
-    Two matching modes, both bounded (unlike the old whole-line
-    subsequence scan):
+    Two matching modes, both bounded (unlike the old whole-line subsequence
+    scan):
       1. Contiguous fuzzy span match (edit-distance scoped) -- always
          attempted, works for any keyword length, and is the primary
          signal for OCR-error tolerance.
@@ -173,8 +156,8 @@ def _fuzzy_keyword_score(line_text: str, keywords: List[str]) -> float:
          subsequence match across a long line is actually unlikely, and
          even then the score is penalized by how "spread out" the match
          is relative to the keyword's own length (density), so a
-         technically-present subsequence padded with 60 unrelated
-         characters no longer scores near 1.0.
+         technically-present subsequence padded with unrelated characters
+         no longer scores near 1.0.
     """
     normalized = re.sub(r"[^a-z0-9@.\s]", "", line_text.lower())
     if not normalized.strip():
@@ -184,19 +167,14 @@ def _fuzzy_keyword_score(line_text: str, keywords: List[str]) -> float:
     for kw in keywords:
         kw_norm = kw.lower()
 
-        # Exact substring -- cheapest and most confident check first.
         if kw_norm in normalized:
             best = max(best, 1.0)
             continue
 
-        # 1. Contiguous fuzzy span match.
         span_ratio = _best_span_edit_ratio(normalized, kw_norm)
         if span_ratio > 0.72:
             best = max(best, span_ratio)
 
-        # 2. Bounded subsequence fallback, only for longer keywords, and
-        #    only credited proportional to match density within the
-        #    smallest window that contains the whole match.
         kw_chars = kw_norm.replace(" ", "")
         if len(kw_chars) >= MIN_LEN_FOR_SUBSEQUENCE_FALLBACK:
             first_idx, last_idx, matched, cursor = None, None, 0, 0
@@ -211,12 +189,14 @@ def _fuzzy_keyword_score(line_text: str, keywords: List[str]) -> float:
             if matched == len(kw_chars) and first_idx is not None:
                 span_len = last_idx - first_idx + 1
                 density = len(kw_chars) / max(span_len, 1)
-                # Require the match to occupy a reasonably tight window
-                # (not scattered across the whole line) before it counts.
                 if density > 0.5:
                     best = max(best, density * 0.75)
 
     return best
+
+
+def _window_text(lines: List[List[OcrWord]]) -> str:
+    return " ".join(_line_text(line) for line in lines)
 
 
 def _line_bbox(line: List[OcrWord]) -> BBox:
@@ -229,10 +209,6 @@ def _line_bbox(line: List[OcrWord]) -> BBox:
 
 def _line_text(line: List[OcrWord]) -> str:
     return " ".join(w.text for w in line)
-
-
-def _window_text(lines: List[List[OcrWord]]) -> str:
-    return " ".join(_line_text(line) for line in lines)
 
 
 def classify_fields_rule_based(words: List[OcrWord]) -> List[FieldExtraction]:
@@ -249,7 +225,6 @@ def classify_fields_rule_based(words: List[OcrWord]) -> List[FieldExtraction]:
             if kw_score <= 0.0:
                 continue
 
-            # Does the pattern match on this line itself?
             pattern_on_line = bool(sig["pattern"].search(text))
 
             if pattern_on_line or window_lines == 0:
@@ -258,9 +233,9 @@ def classify_fields_rule_based(words: List[OcrWord]) -> List[FieldExtraction]:
                     best = ([line], score)
                 continue
 
-            # Keyword matched but pattern didn't -- for fields that allow
-            # it, search a small window of subsequent lines for the
-            # pattern (e.g. phone number one line below "Customer Care:").
+            # Keyword matched but the pattern didn't -- for fields that
+            # allow it, search a small window of subsequent lines for the
+            # pattern (e.g. a phone number one line below "Customer Care:").
             found_window = None
             for span in range(1, window_lines + 1):
                 if i + span >= len(lines):
@@ -274,9 +249,6 @@ def classify_fields_rule_based(words: List[OcrWord]) -> List[FieldExtraction]:
             if found_window is not None:
                 score = kw_score * sig["kw_weight"] + 1.0 * sig["pat_weight"]
             else:
-                # No pattern anywhere nearby -- keep keyword-only signal,
-                # but it will rarely clear the 0.3 threshold alone unless
-                # the keyword match was very strong.
                 found_window = [line]
                 score = kw_score * sig["kw_weight"]
 
@@ -329,35 +301,50 @@ def classify_fields_rule_based(words: List[OcrWord]) -> List[FieldExtraction]:
 _ner_pipeline = None
 _ner_load_attempted = False
 
-# Swap this to a locally fine-tuned checkpoint path once trained on the
-# 8-class LMPC schema, e.g. "./models/distilbert-lmpc-ner".
+# Local checkpoint fine-tuned on synthetic data via
+# scripts/generate_training_data.py + scripts/train_distilbert_classifier.py
+# (see packsure_context_transfer.md for training details/caveats). Falls
+# back to the generic pretrained backbone (disabled by default) if the
+# fine-tuned checkpoint isn't present, so a fresh clone without the model
+# file still runs -- just without this signal.
+FINE_TUNED_MODEL_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "models", "distilbert-lmpc-ner")
 BACKBONE_MODEL_NAME = "distilbert-base-multilingual-cased"
 
+# Fields the line classifier is allowed to fill in when the rule-based
+# classifier found nothing. NOT overriding a rule-based match that already
+# succeeded -- this checkpoint is trained on clean synthetic template text
+# and has not been validated against real garbled OCR output yet (see
+# training caveats), so it's trusted only as a gap-filler, not an override,
+# until real-photo accuracy is measured.
+ML_FILLABLE_FIELDS = set(FIELD_SIGNATURES.keys())
+MIN_ML_CONFIDENCE = 0.6
 
-def get_ner_backbone():
-    """Loads the DistilBERT token-classification backbone specified by the
-    architecture. Used today for lightweight generic-entity signal
-    (person/org/location spans) that can supplement the rule-based
-    classifier's address-detection confidence; becomes the primary
-    classifier once fine-tuned on the LMPC schema.
 
-    Gated behind settings.enable_ner_backbone (env: ENABLE_NER_BACKBONE) --
-    this is a ~650MB download and is NOT required for the pipeline to
-    produce a compliance decision (see classify_fields() below), so it
-    defaults to off rather than surprising anyone with a large,
-    non-essential download."""
+def get_line_classifier():
+    """Loads a per-line sequence classifier: the fine-tuned local checkpoint
+    if present, else the generic pretrained backbone gated behind
+    settings.enable_ner_backbone (a supplementary, unfine-tuned signal only --
+    see module docstring). Returns None if neither is available/loadable;
+    every call site treats that as "no ML signal this run", never a hard
+    failure."""
     global _ner_pipeline, _ner_load_attempted
     if _ner_load_attempted:
         return _ner_pipeline
     _ner_load_attempted = True
 
-    from app.config import settings
-    if not settings.enable_ner_backbone:
-        return None
-
     try:
         from transformers import pipeline
 
+        if os.path.isdir(FINE_TUNED_MODEL_PATH):
+            _ner_pipeline = pipeline("text-classification", model=FINE_TUNED_MODEL_PATH, top_k=None)
+            return _ner_pipeline
+
+        from app.config import settings
+        if not settings.enable_ner_backbone:
+            return None
+        # Generic (not fine-tuned) backbone: only usable in its original
+        # token-classification form, not as a field classifier. Kept as the
+        # small ORG/LOC confidence-nudge behavior it always had.
         _ner_pipeline = pipeline("token-classification", model=BACKBONE_MODEL_NAME, aggregation_strategy="simple")
     except Exception:
         _ner_pipeline = None
@@ -366,15 +353,25 @@ def get_ner_backbone():
 
 def classify_fields(words: List[OcrWord], raw_text: str) -> List[FieldExtraction]:
     """Primary entry point: rule-based classification drives the decision.
-    If the DistilBERT backbone is available, its ORG/LOC entity spans are
-    used to nudge MFR_ADDRESS confidence upward when they overlap with the
-    rule-based match -- a small but real ensemble signal, not decoration."""
+
+    If the fine-tuned line classifier is available, it only fills fields the
+    rule-based pass came up NOT_FOUND on -- picking, among all OCR lines,
+    the highest-confidence line whose predicted label matches that field
+    (score must clear MIN_ML_CONFIDENCE). It never overrides a rule-based
+    hit. If instead only the generic (unfine-tuned) backbone is available,
+    behavior is unchanged from before: a small MFR_ADDRESS confidence nudge
+    from ORG/LOC entity overlap."""
     extractions = classify_fields_rule_based(words)
 
-    ner = get_ner_backbone()
-    if ner is not None:
+    clf = get_line_classifier()
+    if clf is None:
+        return extractions
+
+    is_fine_tuned = os.path.isdir(FINE_TUNED_MODEL_PATH)
+
+    if not is_fine_tuned:
         try:
-            entities = ner(raw_text)
+            entities = clf(raw_text)
             org_or_loc_text = " ".join(e["word"] for e in entities if e["entity_group"] in ("ORG", "LOC"))
             for extraction in extractions:
                 if extraction.field_key == "MFR_ADDRESS" and extraction.extracted_text:
@@ -383,5 +380,34 @@ def classify_fields(words: List[OcrWord], raw_text: str) -> List[FieldExtraction
                         extraction.confidence = min(extraction.confidence + 0.1, 0.99)
         except Exception:
             pass  # backbone is a supplementary signal; never block the pipeline on it
+        return extractions
+
+    missing_fields = {e.field_key for e in extractions if not e.extracted_text and e.field_key in ML_FILLABLE_FIELDS}
+    if not missing_fields:
+        return extractions
+
+    try:
+        lines = group_words_into_lines(words)
+        best_by_field: Dict[str, tuple] = {}  # field_key -> (score, line, bbox)
+        for line in lines:
+            text = _line_text(line)
+            if not text.strip():
+                continue
+            preds = clf(text)[0]  # top_k=None -> list of {label, score} for this one line
+            top = max(preds, key=lambda p: p["score"])
+            if top["label"] not in missing_fields or top["score"] < MIN_ML_CONFIDENCE:
+                continue
+            if top["label"] not in best_by_field or top["score"] > best_by_field[top["label"]][0]:
+                best_by_field[top["label"]] = (top["score"], line, _line_bbox(line))
+
+        by_key = {e.field_key: e for e in extractions}
+        for field_key, (score, line, bbox) in best_by_field.items():
+            e = by_key[field_key]
+            e.extracted_text = _line_text(line).strip()
+            e.confidence = float(score) * 0.9  # slight discount: unvalidated-on-real-photos signal
+            e.bbox = bbox
+            e.font_height_px = bbox.h
+    except Exception:
+        pass  # ML fill is a bonus signal; never block the pipeline on it
 
     return extractions
