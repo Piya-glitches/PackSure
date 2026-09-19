@@ -1,0 +1,6 @@
+{
+  "name": "PackSure Metrology Verification Terminal",
+  "description": "Department of Consumer Affairs Legal Metrology (Packaged Commodities) Rules 2011 enforcement and verification terminal.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
