@@ -20,28 +20,26 @@ services:
       DATABASE_URL: postgresql://packsure:packsure@db:5432/packsure
       JWT_SECRET: local-dev-secret-change-in-production
       CORS_ORIGINS: http://localhost:5173
-      # Set to "true" to load the DistilBERT ensemble signal (an extra
-      # ~650MB download). It is NOT required for the pipeline to work --
-      # the rule-based classifier drives the actual decision either way
-      # (see field_classifier.py). Leave unset/false unless you specifically
-      # want the supplementary NER signal.
-      ENABLE_NER_BACKBONE: "false"
+      PRELOAD_MODELS: "true"
+      # Ollama running on the HOST (or point this at your Colab tunnel URL).
+      ENABLE_VLM: "true"
+      OLLAMA_URL: http://host.docker.internal:11434
+      VLM_MODEL_NAME: qwen2.5vl:3b
+      ENABLE_LINE_CLASSIFIER: "false"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # needed on Linux; harmless on Docker Desktop
     ports:
       - "8000:8000"
     depends_on:
       - db
     volumes:
-      - ./backend/models:/app/models
-      # Without these, EasyOCR and HuggingFace re-download their model
-      # weights (100MB+ and 650MB respectively) EVERY time the container
-      # is recreated, since those downloads land in the container's
-      # writable layer, not the image. Named volumes make them persist
-      # across `docker compose up --build` / restarts / `down` (but not
-      # `down -v`).
-      - easyocr_cache:/root/.EasyOCR
+      - ./backend/models:/app/models          # pdp_yolov8n_seg.onnx / .pt go here
+      # PaddleOCR downloads its det/rec/cls weights here on first start;
+      # persist them so recreating the container doesn't re-download.
+      - paddleocr_cache:/root/.paddleocr
       - hf_cache:/root/.cache/huggingface
 
 volumes:
   packsure_pg_data:
-  easyocr_cache:
+  paddleocr_cache:
   hf_cache:
