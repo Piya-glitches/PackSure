@@ -1,39 +1,42 @@
-# CPU-only PyTorch build. Without this, `pip install torch` pulls the full
-# CUDA-enabled build (800MB+) regardless of whether a GPU is present -- and
-# every model in this pipeline runs with gpu=False. This index serves
-# CPU-only wheels at a fraction of the size/download time.
+# CPU-only torch wheels (ultralytics imports torch even when it runs an ONNX
+# model). Without this index pip pulls the 800MB+ CUDA build.
 --extra-index-url https://download.pytorch.org/whl/cpu
 
-fastapi==0.115.0
-uvicorn[standard]==0.30.6
+fastapi>=0.110.0
+uvicorn[standard]>=0.28.0
 sqlalchemy==2.0.35
 psycopg2-binary==2.9.9
 python-dotenv==1.0.1
-pydantic==2.9.2
+pydantic>=2.6.0
 pydantic-settings==2.5.2
 python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
+bcrypt==4.0.1
 python-multipart==0.0.9
+requests>=2.31.0
 
-# Layer 0 — quality gate + barcode calibration
+# Layer 0 -- barcode calibration + quality gate
 opencv-python-headless==4.10.0.84
-pyzbar==0.1.9
+zxing-cpp>=2.2.0
 python-barcode==0.15.1
 Pillow==10.4.0
 numpy==1.26.4
 
-# Layer 1 — PDP localization (YOLOv8)
+# Layer 1 -- YOLOv8n-seg PDP segmentation (+ ONNX export/serving)
 ultralytics==8.3.10
-
-# Layer 2 — CRAFT text detection + CRNN recognition (EasyOCR ships both,
-# pretrained; see app/pipeline/text_detection_ocr.py for why this is a
-# genuine match for the architecture rather than a substitution)
-easyocr==1.7.2
+onnxruntime>=1.17.0
 torch==2.4.1+cpu
 torchvision==0.19.1+cpu
 
-# Layer 3 — DistilBERT/IndicBERT NER backbone
+# Layer 2 -- PaddleOCR. PINNED to the 2.x line on purpose: PaddleOCR 3.x removed
+# use_gpu / use_angle_cls / show_log / .ocr(cls=True) and changed the result
+# format, which text_detection_ocr.py relies on. `paddleocr>=2.7.3` would
+# silently resolve to 3.x.
+paddlepaddle==2.6.2
+paddleocr==2.10.0
+
+# Layer 3 -- only needed for the optional fine-tuned DistilBERT line classifier
 transformers==4.45.1
 
-# Layer 5 — reporting
+# Layer 5 -- reporting
 reportlab==4.2.5

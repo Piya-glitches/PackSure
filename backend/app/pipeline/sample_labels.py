@@ -1,19 +1,18 @@
 """
-Built-in sample labels let a judge/demo exercise the FULL pipeline
-(barcode calibration -> PDP detection -> OCR -> field classification ->
-font-size-in-mm -> rule validation -> responsible-party resolution) with
-zero uploads. Uses python-barcode to render a REAL, checksum-valid,
-scannable EAN-13 barcode (decodable by pyzbar, the same library the live
-pipeline uses) -- not a fake striped rectangle.
+Built-in sample labels let a judge/demo exercise the FULL pipeline with zero
+uploads. Renders a REAL, checksum-valid EAN-13 (python-barcode) that zxing-cpp
+decodes exactly like a photographed one.
 
-We draw at a KNOWN, self-chosen scale (6 px/mm) purely to construct the
-synthetic image; the pipeline must still independently discover that
-scale via the barcode, exactly as it would for a real photo. That's what
-makes this a genuine end-to-end test rather than a rigged shortcut.
+SCALE CONTRACT (changed with the zxing-cpp migration): barcode_calibration.py
+now treats the *bar pattern only* (95 modules, no quiet zones) as 31.35 mm.
+The old generator scaled the whole rendered image -- quiet zones and all -- to
+37.29 mm, which would make the bar pattern ~33 mm and bias every font-size
+measurement ~5%. We now measure the actual bar-pattern extent in the rendered
+image and scale THAT to exactly 31.35 mm at our chosen 6 px/mm. The pipeline
+still has to rediscover that scale from the barcode on its own.
 """
 
 import io
-from typing import Literal
 
 import numpy as np
 import cv2
@@ -21,7 +20,10 @@ from PIL import Image, ImageDraw, ImageFont
 import barcode
 from barcode.writer import ImageWriter
 
+from app.pipeline.barcode_calibration import NOMINAL_WIDTH_MM
+
 PX_PER_MM = 6
+BAR_PATTERN_MM = NOMINAL_WIDTH_MM["EAN13"]      # keep generator and decoder in sync
 
 
 def _mm(v: float) -> int:
@@ -44,6 +46,18 @@ def _make_ean13_image(digits12: str, module_width_mm: float = 0.33, height_mm: f
     )
     buf.seek(0)
     return Image.open(buf).convert("RGB")
+
+
+def _scaled_barcode(digits12: str) -> Image.Image:
+    img = _make_ean13_image(digits12)
+    gray = np.array(img.convert("L"))
+    # A row near the top crosses only bars (the human-readable digits sit at the
+    # bottom, and the first digit sits in the left quiet zone).
+    row = gray[max(1, int(gray.shape[0] * 0.10))]
+    dark = np.where(row < 128)[0]
+    x0, x1 = int(dark.min()), int(dark.max()) + 1
+    scale = _mm(BAR_PATTERN_MM) / float(x1 - x0)
+    return img.resize((max(1, round(img.width * scale)), max(1, round(img.height * scale))), Image.LANCZOS)
 
 
 SAMPLE_SPECS = {
@@ -107,8 +121,7 @@ def _load_font(size_px: int, bold: bool = False):
 
 
 def generate_sample_label(sample_id: str) -> np.ndarray:
-    """Returns a BGR numpy array (OpenCV format), ready to feed straight
-    into run_full_pipeline exactly like a real uploaded photo."""
+    """BGR array, fed to run_full_pipeline exactly like a real uploaded photo."""
     spec = SAMPLE_SPECS[sample_id]
 
     width_mm, height_mm = 80, 110
@@ -122,11 +135,8 @@ def generate_sample_label(sample_id: str) -> np.ndarray:
         draw.text((_mm(6), cursor_y), text, fill="#1A1A1A", font=font)
         cursor_y += int(_mm(font_size_mm) * 1.6)
 
-    barcode_img = _make_ean13_image(spec["barcode_digits"])
-    bw, bh = barcode_img.size
-    scale = _mm(37.29) / bw  # scale rendered barcode to our chosen physical width
-    barcode_img = barcode_img.resize((int(bw * scale), int(bh * scale)))
-    img.paste(barcode_img, (_mm(6), cursor_y + _mm(4)))
+    barcode_img = _scaled_barcode(spec["barcode_digits"])
+    img.paste(barcode_img, (_mm(6), min(cursor_y + _mm(4), img.height - barcode_img.height - 4)))
 
     return cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
 

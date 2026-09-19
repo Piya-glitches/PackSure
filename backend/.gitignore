@@ -6,3 +6,7 @@ packsure.db
 venv/
 models/*.pt
 models/distilbert-lmpc-ner/
+models/*.onnx
+models/*.pt
+backend/data/
+data/
