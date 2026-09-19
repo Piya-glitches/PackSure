@@ -30,7 +30,6 @@ class Settings(BaseSettings):
     vlm_model_name: str = "qwen2.5vl:3b"
     vlm_timeout_seconds: int = 120
     vlm_max_side: int = 1280
-    enable_line_classifier: bool = False   # optional fine-tuned DistilBERT line classifier
     blur_variance_threshold: float = 40.0
 
     class Config:

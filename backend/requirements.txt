@@ -35,8 +35,5 @@ torchvision==0.19.1+cpu
 paddlepaddle==2.6.2
 paddleocr==2.10.0
 
-# Layer 3 -- only needed for the optional fine-tuned DistilBERT line classifier
-transformers==4.45.1
-
 # Layer 5 -- reporting
 reportlab==4.2.5

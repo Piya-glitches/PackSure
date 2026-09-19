@@ -25,7 +25,6 @@ services:
       ENABLE_VLM: "true"
       OLLAMA_URL: http://host.docker.internal:11434
       VLM_MODEL_NAME: qwen2.5vl:3b
-      ENABLE_LINE_CLASSIFIER: "false"
     extra_hosts:
       - "host.docker.internal:host-gateway"   # needed on Linux; harmless on Docker Desktop
     ports:
@@ -37,9 +36,7 @@ services:
       # PaddleOCR downloads its det/rec/cls weights here on first start;
       # persist them so recreating the container doesn't re-download.
       - paddleocr_cache:/root/.paddleocr
-      - hf_cache:/root/.cache/huggingface
 
 volumes:
   packsure_pg_data:
   paddleocr_cache:
-  hf_cache:

@@ -35,7 +35,7 @@ from app.pipeline.barcode_calibration import detect_barcode_calibration
 from app.pipeline.pdp_segmentation import detect_pdp_mask
 from app.pipeline.dewarp import select_dewarp, apply_clahe, estimate_cylinder_radius_px
 from app.pipeline.text_detection_ocr import run_ocr, get_reader
-from app.pipeline.field_classifier import classify_fields, fetch_vlm_fields, vlm_enabled, get_line_classifier
+from app.pipeline.field_classifier import classify_fields, fetch_vlm_fields, vlm_enabled
 from app.pipeline.font_size import check_font_size
 from app.pipeline.responsible_party import resolve_responsible_party
 from app.pipeline.rule_validators import validate_field_format
@@ -299,10 +299,6 @@ def warm_up() -> Dict[str, str]:
         MODEL_STATUS["vlm"] = "ollama reachable" if vlm_enabled() else "unavailable -> rule-based extraction"
     except Exception as exc:
         MODEL_STATUS["vlm"] = f"FAILED: {exc}"
-    try:
-        MODEL_STATUS["line_classifier"] = "loaded" if get_line_classifier() is not None else "off"
-    except Exception as exc:
-        MODEL_STATUS["line_classifier"] = f"FAILED: {exc}"
     return dict(MODEL_STATUS)
 
 

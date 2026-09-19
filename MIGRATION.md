@@ -74,8 +74,6 @@ If the VLM is down, scans silently fall back to rules and the `vlm_wait` log lin
 4. **Sample-label barcode scale** matched the old 37.29 mm constant (quiet zones included); now exactly 31.35 mm bar pattern to match `barcode_calibration.py`.
 5. `.env` values weren't visible to `vlm_extractor.py` (pydantic-settings doesn't export to `os.environ`); `config.py` now calls `load_dotenv()`.
 6. PaddleOCR predictors aren't thread-safe and FastAPI runs sync routes in a threadpool → OCR is behind a lock.
-7. The old "DistilBERT backbone" loaded the *generic* pretrained checkpoint, whose classification head is random — it added no signal. Removed.
-   Your fine-tuned line classifier plugs in as an optional third signal (`ENABLE_LINE_CLASSIFIER=true`, checkpoint in `models/distilbert-lmpc-ner/`; label names must be the field names).
 
 Behaviour changes to be aware of: with no barcode found, a scan that would have been COMPLIANT is now NEEDS_REVIEW (font size was
 unverifiable, so it shouldn't be stamped compliant). OCR and the VLM run in parallel.
@@ -98,6 +96,6 @@ unverifiable, so it shouldn't be stamped compliant). OCR and the VLM run in para
 - **Please verify `MIN_FONT_SIZE_MM_BY_AREA` in `types.py`.** It tiers by PDP area (1/2/4 mm). My recollection is that Rule 9 keys
   numeral height to *net quantity* (roughly 1 / 2 / 4 / 6 mm bands) — I could not check the gazette here, so confirm before presenting it as statute.
 - VLM values are grounded on OCR lines to get a box; if OCR doesn't corroborate the text, the field keeps the VLM text but its font size is reported unverifiable.
-- `README.md` still describes EasyOCR/pyzbar/DistilBERT — update it before judging.
+- `README.md` still describes EasyOCR/pyzbar — update it before judging.
 - I could not install zxing-cpp/PaddleOCR/ultralytics in my sandbox (no network). I tested the geometry, field logic and orchestration
   with stubs for those three; `run_on_image.py` on a real photo is the true integration test.

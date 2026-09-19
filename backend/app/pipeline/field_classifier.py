@@ -1,7 +1,7 @@
 """
 LAYER 3 -- FIELD EXTRACTION / CLASSIFICATION  (rewritten per systechchange.pdf)
 
-Three signals, in priority order:
+Two signals, in priority order:
 
   1. VLM (Qwen2.5-VL via Ollama, see vlm_extractor.py)  -- PRIMARY.
      Reads the dewarped label image directly and returns the 8 LMPC fields
@@ -11,11 +11,6 @@ Three signals, in priority order:
   2. Rule-based OCR-line classifier                     -- FALLBACK / cross-check.
      Used whole when the VLM is unreachable, and per-field when the VLM
      says "not visible" but the OCR text has a strong keyword+pattern hit.
-  3. Fine-tuned DistilBERT line classifier (optional)   -- fills WEAK rule
-     fields only. Loads ./models/distilbert-lmpc-ner if present and
-     ENABLE_LINE_CLASSIFIER=true. (The old code loaded the *generic*
-     pretrained checkpoint, whose classification head is randomly
-     initialised -- that was decoration, not a signal, and is removed.)
 
 Bug fixes folded in (systechchange.pdf, Step 1):
   * Keyword matching is token-based, never raw substring. Short keywords
@@ -258,53 +253,6 @@ def classify_fields_rule_based(words: List[OcrWord]) -> List[FieldExtraction]:
 
 
 # ---------------------------------------------------------------------------
-# Optional fine-tuned DistilBERT line classifier
-# ---------------------------------------------------------------------------
-
-LINE_CLASSIFIER_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "models", "distilbert-lmpc-ner")
-_line_clf = None
-_line_clf_attempted = False
-
-
-def get_line_classifier():
-    global _line_clf, _line_clf_attempted
-    if _line_clf_attempted:
-        return _line_clf
-    _line_clf_attempted = True
-    if os.environ.get("ENABLE_LINE_CLASSIFIER", "false").lower() not in ("1", "true", "yes"):
-        return None
-    if not os.path.isdir(LINE_CLASSIFIER_PATH):
-        return None
-    try:
-        from transformers import pipeline
-        _line_clf = pipeline("text-classification", model=LINE_CLASSIFIER_PATH)
-    except Exception:
-        _line_clf = None
-    return _line_clf
-
-
-def _apply_line_classifier(lines, rule: Dict[str, FieldExtraction]) -> None:
-    clf = get_line_classifier()
-    if clf is None or not lines:
-        return
-    try:
-        preds = clf([_line_text(l) for l in lines], truncation=True, batch_size=16)
-    except Exception:
-        return
-    best: Dict[str, Tuple[int, float]] = {}
-    for i, p in enumerate(preds):
-        p = p[0] if isinstance(p, list) else p
-        label, score = p.get("label"), float(p.get("score", 0.0))
-        # ignore un-named heads ("LABEL_3") and the NONE class
-        if label in FIELD_ORDER and score >= 0.85 and (label not in best or score > best[label][1]):
-            best[label] = (i, score)
-    for key, (i, score) in best.items():
-        cur = rule[key]
-        if cur.extracted_text is None or cur.confidence < 0.5:
-            rule[key], _ = _build_extraction(key, lines, i, min(0.6 + 0.3 * score, 0.9))
-
-
-# ---------------------------------------------------------------------------
 # VLM access + grounding
 # ---------------------------------------------------------------------------
 
@@ -412,10 +360,9 @@ def classify_fields(
     raw_text: str,
     vlm_fields: Optional[Dict[str, Optional[str]]] = None,
 ) -> List[FieldExtraction]:
-    """VLM-primary merge. `vlm_fields=None` => rules(+optional DistilBERT) only."""
+    """VLM-primary merge. `vlm_fields=None` => rule-based extraction only."""
     lines = group_words_into_lines(words)
     rule, _ = _rule_pass(lines)
-    _apply_line_classifier(lines, rule)
 
     if vlm_fields is None:
         return [rule[k] for k in FIELD_ORDER]
